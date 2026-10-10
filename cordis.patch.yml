@@ -1,0 +1,8 @@
+# dsh-browser-bridge bundle layer.
+#
+# 一行：把 5 个浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click）
+# 注册进 DSH server 工具层，驱动一个用户可见的持久 Chrome（venv3 Python Playwright 守护进程）。
+
+- insert:
+    - id: browser-bridge
+      name: dsh-browser-bridge

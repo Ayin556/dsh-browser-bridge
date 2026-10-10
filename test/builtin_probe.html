@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-bridge 内置面板探针</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; padding: 16px; margin: 0; }
+  #app { padding: 12px; border: 2px solid #3b82f6; border-radius: 8px; background: #f8fafc; }
+  .big { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+  button { font-size: 16px; padding: 8px 16px; margin: 8px 0; }
+  #box { width: 120px; height: 60px; background: #fca5a5; border-radius: 6px; margin-top: 8px; }
+  code { background: #e2e8f0; padding: 0 4px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="app" data-probe="v1">
+  <div class="big" id="title">dsh-bridge 内置面板探针</div>
+  <p>视口：<code id="vw"></code> × <code id="vh"></code> ｜ UA 含 Mobile：<code id="mob"></code> ｜ DPR：<code id="dpr"></code></p>
+  <p><input id="who" placeholder="输入名字" /> <input type="password" id="pw" placeholder="密码（dom 摘要须隐去）" /></p>
+  <button id="btn" onclick="probeClick()">点我</button>
+  <div id="out">未点击</div>
+  <div id="box"></div>
+</div>
+<script>
+  function probeClick() {
+    var v = document.getElementById('who').value || '匿名';
+    document.getElementById('out').textContent = '已点击 ' + v;
+  }
+  function refresh() {
+    document.getElementById('vw').textContent = window.innerWidth;
+    document.getElementById('vh').textContent = window.innerHeight;
+    document.getElementById('mob').textContent = /Mobile/i.test(navigator.userAgent) ? '是' : '否';
+    document.getElementById('dpr').textContent = window.devicePixelRatio;
+  }
+  refresh();
+  window.addEventListener('resize', refresh);
+  setInterval(refresh, 800);
+</script>
+</body>
+</html>

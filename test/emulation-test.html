@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设备仿真诚证页</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 16px; background: #f5f6f8; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .dim { font-size: 28px; font-weight: 700; color: #1677ff; }
+  .label { color: #888; font-size: 12px; }
+  .verdict { font-size: 15px; font-weight: 600; padding: 10px 12px; border-radius: 8px; }
+  .mobile { background: #e6f4ff; color: #1677ff; }
+  .desktop { background: #fff7e6; color: #d48806; }
+  .bar375 { height: 24px; background: linear-gradient(90deg, #1677ff22, #1677ff); border-radius: 6px; position: relative; }
+  .bar375 span { position: absolute; right: 6px; top: 2px; font-size: 11px; color: #333; }
+</style>
+</head>
+<body>
+  <h1>设备仿真诚证页</h1>
+  <div class="card">
+    <div class="label">window.innerWidth（布局视口宽）</div>
+    <div class="dim" id="inner">-</div>
+    <div class="label">innerHeight <b id="innerh">-</b> ｜ devicePixelRatio <b id="dpr">-</b> ｜ 触摸 <b id="touch">-</b></div>
+  </div>
+  <div class="card">
+    <div class="label">判定（≤480 视为手机视口）</div>
+    <div class="verdict mobile" id="verdict">-</div>
+  </div>
+  <div class="card">
+    <div class="label">375 基准条（当前视口下的实际占比）</div>
+    <div class="bar375" id="bar"><span>375 / 视口宽</span></div>
+  </div>
+<script>
+  function render() {
+    var w = window.innerWidth, h = window.innerHeight;
+    document.getElementById('inner').textContent = w + ' px';
+    document.getElementById('innerh').textContent = h;
+    document.getElementById('dpr').textContent = window.devicePixelRatio;
+    var touch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    document.getElementById('touch').textContent = touch ? '有' : '无';
+    var v = document.getElementById('verdict');
+    if (w <= 480) { v.textContent = '📱 手机视口（仿真生效）'; v.className = 'verdict mobile'; }
+    else { v.textContent = '🖥 桌面视口（仿真未开/已还原）'; v.className = 'verdict desktop'; }
+    document.getElementById('bar').style.width = Math.min(100, 375 / w * 100) + '%';
+  }
+  render();
+  window.addEventListener('resize', render);
+</script>
+</body>
+</html>

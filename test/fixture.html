@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>bridge fixture</title>
+</head>
+<body>
+  <h1>dsh-browser-bridge 自测页</h1>
+  <p id="out">初始文本</p>
+  <input id="who" type="text" placeholder="你是谁" value="">
+  <input id="secret" type="password" placeholder="口令（不应出现在摘要 value 里）">
+  <button id="btn" onclick="document.getElementById('out').textContent='已点击 '+document.getElementById('who').value">点我</button>
+  <a id="link" href="#anchor">锚点链接</a>
+  <div id="anchor">锚点目标</div>
+</body>
+</html>
