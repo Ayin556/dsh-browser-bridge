@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "dsh server plugin: 给 agent 的浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/attach/emulate）——默认驱动用户可见的持久 Chrome；target=builtin 经无 CDP 命令通道驱动 DSH 桌面端内置浏览器面板（普通重启即可用、面板自动打开、设备仿真）。运行时零安装：走 venv3 的 Python Playwright 守护进程。",
   "type": "module",
   "main": "lib/index.js",
