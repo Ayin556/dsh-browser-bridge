@@ -214,6 +214,18 @@ ln -sfn ~/deepseekharness工作区/dsh-browser-bridge ~/.dsh/profiles/<profile>/
 > 与 agent 的关系：下拉与 `browser_emulate` 工具**共用同一套 CDP 命令与同一份机型表**，
 > 面板手工切和让模型切效果一致，可以互相接着用。
 
+**行为细节（踩过的坑，2026-10-14）**：
+
+- **选择是粘性的**：存在 `localStorage`（key `dsh-bridge-device-choice-v1`），**新开页面与重启后都沿用**
+  ——与 Chrome DevTools 的"设备设置是全局的"一致。否则"选了原生·PC，新开一个页面又回移动端"。
+- **切到「原生 · PC」会还原原生 UA 并重载当前页面**：只改 UA 不重载的话，已打开的页面仍按移动 UA 渲染，
+  看起来像"没切成 PC"。原生态由 `dshBridgeDevice="native"` 表达（不再用 `dshBridgeDisabled`，
+  后者会让 `scan()` 跳过该 webview、面板一重渲染下拉框就消失）。
+- **PC 语义靠 `dshBridgeMobile="0"`**：`autoReloadOnce` / `fixUaAfterNav`（导航后补 UA 的兜底）都读它；
+  这两处另加了 `isNative()` 双保险，避免原生态被静默改回移动 UA。
+- 默认仍是**手机 390**（移动端 H5 调试优先）；要 PC 就在下拉里选「原生 · PC（不仿真）」。
+- 笔记本/平板机型（`mobile` 能力位为 0）**不会被锁宽**，但仍算"在仿真某个机型"（徽标不是"原生"）。
+
 **实测（`test/emulation_probe.py`，iPhone 16 Pro Max 规格，12/12 通过）**：
 `innerWidth×innerHeight = 440×956`、`devicePixelRatio = 3`、`screen = 440×956`、
 UA 变 iPhone、`navigator.userAgentData.platform = iOS` / `.mobile = true`、

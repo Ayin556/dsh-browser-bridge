@@ -178,7 +178,22 @@ function makeHarness() {
 	}
 	// 回归护栏：resetChrome 曾把工具栏整个拆掉 → 用户切到"原生"后再也切不回机型（2026-10-14 修）
 	assert.ok(!clientSrc.includes("__dshToggle.remove()"), "resetChrome 不应再移除工具栏（否则机型下拉会消失）");
-	console.log("✓ UI 接线契约：机型下拉横跨 client.cjs / browser_daemon.py / index.js 三处关键件齐全");
+	// 回归护栏（2026-10-14 用户实测 bug：下拉选"原生 · PC（不仿真）"后页面仍是移动端）
+	assert.ok(clientSrc.includes('dshBridgeDisabled = "1"') === false, "不应再写 dshBridgeDisabled=\"1\"（scan 会跳过它，面板重渲染后下拉框会消失）");
+	assert.ok(clientSrc.includes("setMobile(wv, false, null, true)"), "resetChrome 必须走 setMobile(false)：写 dshBridgeMobile=\"0\" 的 PC 语义 + 还原 UA + reload 一次");
+	assert.ok(
+		clientSrc.includes('if (isNative(wv) || wv.dataset.dshBridgeMobile === "0") return Promise.resolve(false);'),
+		"fixUaAfterNav 必须有 isNative 双保险，否则原生态的 UA 会被静默改回移动 UA"
+	);
+	assert.ok(
+		clientSrc.includes('if (isNative(wv) || wv.dataset.dshBridgeMobile === "0" || wv.dataset.dshBridgeUaApplied === "1") return;'),
+		"autoReloadOnce 同样必须有 isNative 双保险"
+	);
+	// 粘性：设备选择要跨 webview 生效（否则"选了 PC，新开页面又回移动端"）
+	assert.ok(clientSrc.includes("CHOICE_KEY") && clientSrc.includes("function saveChoice"), "设备选择必须持久化（localStorage 粘性）");
+	assert.ok(clientSrc.includes("var initChoice = LAST_CHOICE.value"), "新 webview 首挂必须套用上次的设备选择");
+	assert.ok(clientSrc.includes("applyDeviceChoice(wv, initChoice, LAST_CHOICE.orientation, false)"), "首挂套用机型时应传 fromUser=false（不重载，避免与地址栏首航竞态）");
+	console.log("✓ UI 接线契约：机型下拉横跨 client.cjs / browser_daemon.py / index.js 三处关键件齐全（含原生·PC 回归护栏）");
 }
 //#endregion
 
