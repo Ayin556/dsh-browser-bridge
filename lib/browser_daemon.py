@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""browser_daemon.py —— dsh-browser-bridge 的浏览器守护进程（路线 B：托管可见 Chrome）。
+"""browser_daemon.py —— dsh-browser-bridge 的浏览器守护进程。
 
 由插件的 DaemonClient 以子进程方式启动（stdin/stdout 走 NDJSON，UTF-8），常驻持有：
-  - Playwright 持久上下文（channel=chrome 系统浏览器，有头，slowMo 放慢便于用户旁观）
-  - 当前活动页（navigate/click/screenshot/dom/evaluate 全部作用于它）
+
+- **内置浏览器面板通道（默认，builtin）**：把命令入队到 9330 控制端口，由随桌面端
+  boot manifest 常驻的客户端扩展（client.cjs）轮询取走、用 webview 原生 API 执行后
+  回报——零 CDP、普通重启桌面端即可用；面板未打开时 navigate 会自动打开。
+- **托管可见 Chrome（managed，显式指定才用）**：Playwright 持久上下文
+  （channel=chrome 系统浏览器，有头，slowMo 放慢便于用户旁观），
+  当前活动页（navigate/click/screenshot/dom/evaluate 全部作用于它）。
+
+目标解析：`params.target` 缺省时取 `_GLOBAL_CONFIG['defaultTarget']`（插件配置下发，
+默认 **builtin**）——2026-10-13 起默认由 managed 改为 builtin，避免模型不传 target
+时习惯性弹出外置 Chrome 窗口做页面调试。
 
 协议（每行一个 JSON 对象）：
   请求:  {"id": 1, "op": "navigate", "params": {...}}
@@ -18,15 +27,17 @@
   - 浏览器被用户手动关掉 → context 失效，下一次请求自动重新拉起；
   - 登录态靠 profileDir（持久化 user-data-dir）跨会话保留，进程不背登录态。
 
-ops：
-  config     应用配置（profileDir/shotsDir/viewport/slowMo...），幂等
+ops（凡带 `target?` 的：缺省 = `_GLOBAL_CONFIG['defaultTarget']`，当前默认 builtin；见 `Browser._target`）：
+  config     应用配置（profileDir/shotsDir/viewport/slowMo/defaultTarget...），幂等
   ping       健康检查
   navigate   {"url, wait_until?, timeout_ms?, target?}      → {url, title, status}
   evaluate   {"expression, target?}                         → {value}
   screenshot {"full_page?, selector?, timeout_ms?, target?} → {path, bytes, url, title}
   dom        {"selector?, max_chars?, target?}              → 摘要或 outerHTML
   click      {"selector, timeout_ms?, target?}              → {clicked, url, title}
-  attach     {"cdp_port?, url_prefix?, timeout_ms?}         → CDP attach 到 DSH 桌面端（路线 C）
+  emulate    {"width?, height?, ua?, reset?, target?}       → 设备仿真开关/调参
+  back       {"target?}                                     → guest history.back（诊断口）
+  attach     {"cdp_port?, url_prefix?, timeout_ms?}         → CDP attach 到 DSH 桌面端（降级通道）
   targets    {"cdp_port?}                                   → 重读 CDP target 清单
   detach     {}                                             → 断开 attach（不杀桌面端）
 
@@ -151,16 +162,22 @@ class PlaywrightBuiltin:
         return {"clicked": params["selector"], "url": page.url, "title": _safe_title(page)}
 
     def emulate(self, params):
-        """移动端仿真（Playwright 通道：视口尺寸可调；dsf/mobile 随实例启动配置）。"""
-        page = self.page
-        page.set_viewport_size({"width": int(params.get("width", 390)), "height": int(params.get("height", 844))})
-        return {"emulated": {"width": int(params.get("width", 390)), "height": int(params.get("height", 844)),
-                             "deviceScaleFactor": None, "mobile": None, "note": "playwright 通道仅视口"}}
+        """设备仿真（这条通道同样走 CDP Emulation.*，与 managed / DevTools 口径一致）。
+
+        旧实现只 set_viewport_size（给不了 dpr/touch/Client Hints）；现改走本页的 CDP 会话。
+        """
+        if params.get("reset"):
+            return apply_emulation(self._cdp().send, {}, reset=True)
+        return apply_emulation(self._cdp().send, params.get("spec") or {})
 
     def emulate_reset(self, params):
-        cfg = self._config("viewportWidth", 390), self._config("viewportHeight", 844)
-        self.page.set_viewport_size({"width": cfg[0], "height": cfg[1]})
-        return {"emulated": False}
+        return apply_emulation(self._cdp().send, {}, reset=True)
+
+    def _cdp(self):
+        """本页的 CDP 会话（惰性创建；页面被换掉时重建）。"""
+        if getattr(self, "_cdp_session", None) is None:
+            self._cdp_session = self.page.context.new_cdp_session(self.page)
+        return self._cdp_session
 
     def _config(self, key, default):
         # PlaywrightBuiltin 不直接持 config，经外部注入的 getter 兜底
@@ -339,24 +356,17 @@ class BuiltinSession:
         return info
 
     def emulate(self, params):
-        """移动端设备仿真（Emulation 域，raw CDP 原生支持）。"""
-        width = int(params.get("width", 390))
-        height = int(params.get("height", 844))
-        dsf = float(params.get("deviceScaleFactor", 3))
-        mobile = bool(params.get("mobile", True))
-        self.command("Emulation.setDeviceMetricsOverride",
-                     {"width": width, "height": height, "deviceScaleFactor": dsf, "mobile": mobile}, timeout=10)
-        self.command("Emulation.setTouchEmulationEnabled",
-                     {"enabled": mobile, "maxTouchPoints": 5}, timeout=10)
-        ua = params.get("ua")
-        if ua:
-            self.command("Emulation.setUserAgentOverride", {"userAgent": ua}, timeout=10)
-        return {"emulated": {"width": width, "height": height, "deviceScaleFactor": dsf, "mobile": mobile, "ua": bool(ua)}}
+        """设备仿真（raw CDP 的 Emulation 域）——与 managed 共用 `apply_emulation`，口径一致。
+
+        本通道（CDP attach 到带参重启的桌面端）是**目前唯一已验证可用**的"内置面板 +
+        完美仿真"组合：Emulation 域完备，含 screen 尺寸/朝向/Client Hints。
+        """
+        if params.get("reset"):
+            return self.emulate_reset(params)
+        return apply_emulation(lambda m, p=None: self.command(m, p, timeout=15), params.get("spec") or {})
 
     def emulate_reset(self, params):
-        self.command("Emulation.clearDeviceMetricsOverride", timeout=10)
-        self.command("Emulation.setTouchEmulationEnabled", {"enabled": False}, timeout=10)
-        return {"emulated": False}
+        return apply_emulation(lambda m, p=None: self.command(m, p, timeout=15), {}, reset=True)
 
     def click(self, params):
         selector = params["selector"]
@@ -410,6 +420,87 @@ def _wrap_eval_expression(expr):
     return s
 
 
+def apply_emulation(send, spec, reset=False):
+    """把设备规格下发到一条 CDP 通道（`send(method, params)`）。
+
+    与 Chrome DevTools 设备工具栏**同一组命令**；managed（Playwright CDP session）与
+    builtin-CDP（attach 降级通道）两条路径共用，保证口径一致：
+
+      Emulation.setDeviceMetricsOverride  视口/mobile/dpr/screen/朝向
+      Emulation.setTouchEmulationEnabled  maxTouchPoints / (pointer: coarse) / (hover: none)
+      Emulation.setUserAgentOverride      UA + Client Hints（userAgentMetadata）
+
+    实测（test/emulation_probe.py）：iPhone 16 Pro Max 规格下发后，页面侧
+    innerWidth/innerHeight=440×956、devicePixelRatio=3、screen=440×956、
+    navigator.maxTouchPoints=5、(pointer: coarse) 与 (hover: none) 均命中。
+    """
+    if reset:
+        send("Emulation.clearDeviceMetricsOverride")
+        send("Emulation.setTouchEmulationEnabled", {"enabled": False, "maxTouchPoints": 1})
+        send("Emulation.setUserAgentOverride", {"userAgent": ""})
+        return {"emulated": False, "engine": "cdp"}
+    horizontal = spec.get("orientation") == "horizontal"
+    width = int(spec["width"])
+    height = int(spec["height"])
+    touch = bool(spec.get("touch"))
+    send("Emulation.setDeviceMetricsOverride", {
+        "width": width,
+        "height": height,
+        "deviceScaleFactor": float(spec.get("dpr") or 1),
+        "mobile": bool(spec.get("mobile")),
+        "screenWidth": int(spec.get("screenWidth") or width),
+        "screenHeight": int(spec.get("screenHeight") or height),
+        "positionX": 0,
+        "positionY": 0,
+        "scale": 1,
+        "screenOrientation": {
+            "type": "landscapePrimary" if horizontal else "portraitPrimary",
+            "angle": 90 if horizontal else 0,
+        },
+    })
+    send("Emulation.setTouchEmulationEnabled", {
+        "enabled": touch,
+        "maxTouchPoints": 5 if touch else 1,
+        "configuration": "mobile" if touch else "desktop",
+    })
+    if spec.get("ua"):
+        params = {"userAgent": spec["ua"]}
+        meta = _ua_metadata(spec.get("uaMeta"))
+        if meta:
+            params["userAgentMetadata"] = meta
+        try:
+            send("Emulation.setUserAgentOverride", params)
+        except Exception:
+            # 个别 Chromium 版本对 metadata 字段有强校验 → 退回只覆盖 UA
+            send("Emulation.setUserAgentOverride", {"userAgent": spec["ua"]})
+    return {
+        "emulated": {
+            "preset": spec.get("preset"),
+            "width": width,
+            "height": height,
+            "deviceScaleFactor": float(spec.get("dpr") or 1),
+            "mobile": bool(spec.get("mobile")),
+            "touch": touch,
+            "orientation": "horizontal" if horizontal else "vertical",
+            "ua": spec.get("ua"),
+        },
+        "engine": "cdp",
+    }
+
+
+def _ua_metadata(meta):
+    """DevTools 的 user-agent-metadata → CDP UserAgentMetadata（brands 交给 Chromium 自行填充）。"""
+    if not meta:
+        return None
+    return {
+        "platform": meta.get("platform", ""),
+        "platformVersion": str(meta.get("platformVersion", "")),
+        "architecture": meta.get("architecture", ""),
+        "model": meta.get("model", ""),
+        "mobile": bool(meta.get("mobile")),
+    }
+
+
 def _shot_path(shots_dir):
     path = shots_dir / ("%s.png" % time.strftime("%Y%m%d-%H%M%S"))
     seq = 1
@@ -421,6 +512,8 @@ def _shot_path(shots_dir):
 
 # 守护进程级配置快照（PlaywrightBuiltin 的截图目录等取用；config op 时刷新）
 _GLOBAL_CONFIG = {}
+# 控制端口的 /ui/emulate 需要触碰 Browser（已 attach 的 CDP 会话），由 main() 注入
+_UI_BROWSER = None
 
 
 class Browser:
@@ -435,6 +528,9 @@ class Browser:
         self.builtin_browser = None
         self.builtin_session = None
         self.attach_info = None
+        # managed 目标的真仿真通道：当前页的 CDP 会话（Emulation.* 唯一入口，见 _cdp_session）
+        self.managed_cdp = None
+        self.managed_cdp_page = None
 
     def log(self, level, message):
         print(json.dumps({"type": "log", "level": level, "message": message}, ensure_ascii=False), flush=True)
@@ -504,18 +600,23 @@ class Browser:
     # ---------- 路线 C：CDP attach（双通道：Playwright page 化 / 裸 CDP） ----------
 
     def builtin(self):
-        """当前内置面板会话（PlaywrightBuiltin 或 BuiltinSession），死了给可读错误。"""
+        """当前内置面板会话（PlaywrightBuiltin 或 BuiltinSession），死了给可读错误。
+
+        注意：这是 **CDP 降级通道**的会话。默认路径（client.cjs 命令通道，见
+        `_builtin_dispatch`）不需要 attach，也不经过本方法。
+        """
         session = self.builtin_session
         if session is None:
             raise RuntimeError(
-                "target=builtin 尚未 attach。先调 browser_attach（DSH 桌面端需带 "
-                "--remote-debugging-port=9222 重启并在面板里打开一个页面），或改用 target=managed。"
+                "内置面板的 CDP 降级通道未 attach。默认路径不需要它——请确认桌面端已普通重启"
+                "（client 扩展随之装载）、并在内置浏览器面板里打开过一次页面；"
+                "仅当需要 CDP 深度调试时才调 browser_attach（那需要带 --remote-debugging-port=9222 重启桌面端）。"
             )
         if not session.alive():
             self.builtin_session = None
             self.builtin_browser = None
             raise RuntimeError(
-                "内置浏览器面板的连接已失效（面板可能被关闭/重启，或桌面端没带 CDP 参数重启）。"
+                "内置浏览器面板的 CDP 连接已失效（面板可能被关闭/重启，或桌面端没带 CDP 参数重启）。"
                 "请重新调 browser_attach。"
             )
         return session
@@ -735,21 +836,74 @@ class Browser:
             )
         return self._via_client("back", params, timeout=15)
 
-    def op_emulate(self, params):
-        """移动端设备仿真开关/调参。
+    # ---------- 设备仿真：managed = 真 CDP；builtin = 降级透传 ----------
 
-        builtin=面板 webview：优先 client.cjs（宿主锁宽+UA，setMobile/resetChrome，
-        无需 CDP）；CDP 通道作为回落。managed=托管 Chrome（仅视口尺寸）。
+    def _cdp_session(self, page):
+        """取（或建）当前页的 CDP 会话——managed 目标做设备仿真的唯一入口。
+
+        Playwright 的 `set_viewport_size` 只能改视口尺寸，**给不了** dpr / mobile /
+        touch / Client Hints，所以这里直接开一条 CDP 会话，用与 Chrome DevTools
+        设备工具栏**同一组** `Emulation.*` 命令（见 `_emulate_managed`）。
         """
-        if params.get("target") == "builtin":
-            out = self._builtin_dispatch("emulate", params, timeout=15)
-            out["mobile"] = not (bool(params.get("reset")) or params.get("mobile") is False)
-            return out
-        page = self.current_page()
-        adapter = PlaywrightBuiltin(page)
-        out = adapter.emulate_reset(params) if params.get("reset") else adapter.emulate(params)
+        if self.managed_cdp is not None and self.managed_cdp_page is page:
+            return self.managed_cdp
+        if self.managed_cdp is not None:
+            try:
+                self.managed_cdp.detach()
+            except Exception:
+                pass
+        self.managed_cdp = self.context.new_cdp_session(page)
+        self.managed_cdp_page = page
+        return self.managed_cdp
+
+    @staticmethod
+    def _ua_metadata(meta):
+        """（保留为兼容入口，实现已移到模块级 `_ua_metadata`。）"""
+        return _ua_metadata(meta)
+
+    def _emulate_managed(self, page, spec, reset=False):
+        """managed：CDP `Emulation.*` —— 与 Chrome DevTools 设备工具栏等价。"""
+        out = apply_emulation(self._cdp_session(page).send, spec, reset=reset)
         out["url"] = page.url
         return out
+
+    def op_emulate(self, params):
+        """设备仿真（口径对齐 Chrome DevTools 设备工具栏）。
+
+        - **managed**：本守护进程直接发 CDP `Emulation.*` → 真仿真（视口/dpr/mobile/touch/Client Hints）。
+        - **builtin**：本方法只提供**降级**（把 spec 交给 client.cjs 做 CSS 近似）；桌面端下
+          真正的完美仿真由插件层（`lib/electron-emulation.js`）经 Electron 主进程 CDP 完成，
+          不经本守护进程——见 index.js 的 `browser_emulate`。
+        """
+        spec = params.get("spec") or {}
+        reset = bool(params.get("reset"))
+        if self._target(params) == "builtin":
+            if not spec and not reset:
+                raise RuntimeError("builtin 仿真需要 spec（机型规格）；请经 browser_emulate 工具调用")
+            # ① 已 attach 的 CDP 通道优先：Emulation 域完备 → 与 DevTools 等价（已验证可用）
+            try:
+                session = self.builtin_session
+                if session is not None and session.alive():
+                    out = apply_emulation(lambda m, p=None: session.command(m, p, timeout=15), spec, reset=reset)
+                    out["engine"] = "cdp-attach"
+                    return out
+            except Exception as exc:
+                self.log("warn", "builtin 仿真改走 CDP attach 失败，回落 client 通道：%s" % exc)
+            # ② 无 CDP → client.cjs 的 CSS 近似（降级，调用方需如实标注缺项）
+            out = self._builtin_dispatch("emulate", params, timeout=20)
+            out["engine"] = out.get("engine") or "css"
+            return out
+        return self._emulate_managed(self.current_page(), spec, reset=reset)
+
+    def op_client_info(self, params):
+        """询问 client.cjs 内置面板的实时句柄（webContents id / URL / 当前仿真态）。
+
+        插件层拿到 webContents id 后，才能用 Electron 主进程的 `webContents.debugger`
+        走原生 CDP（无需 --remote-debugging-port 带参重启）。
+        """
+        if not self._wait_client():
+            raise RuntimeError("内置面板客户端未在线（client.cjs 未装载/未轮询）。请普通重启 DSH 桌面端后重试。")
+        return self._via_client("info", params or {}, timeout=10)
 
     def op_targets(self, params):
         """重读 CDP target 清单（attach 前后都可用，用于确认面板开没开）。"""
@@ -776,8 +930,20 @@ class Browser:
 
     # ---------- ops ----------
 
+    def _target(self, params):
+        """解析实际生效的目标：显式 `params.target` > 插件默认 `defaultTarget`（默认 builtin）。
+
+        双保险的第二层：JS 侧（index.js 的 resolveTarget）已把缺省目标注入 params，
+        这里再兜一层，保证任何调用路径都不会"静默退回外置 Chrome"。
+        """
+        target = (params or {}).get("target")
+        if target in ("managed", "builtin"):
+            return target
+        default = str(_GLOBAL_CONFIG.get("defaultTarget") or "builtin").strip()
+        return default if default in ("managed", "builtin") else "builtin"
+
     def op_navigate(self, params):
-        if params.get("target") == "builtin":
+        if self._target(params) == "builtin":
             return self._builtin_dispatch("navigate", params)
         page = self.current_page()
         resp = page.goto(
@@ -789,7 +955,7 @@ class Browser:
         return {"url": page.url, "title": title, "status": resp.status if resp is not None else None}
 
     def op_evaluate(self, params):
-        if params.get("target") == "builtin":
+        if self._target(params) == "builtin":
             return self._builtin_dispatch("evaluate", params)
         page = self.current_page()
         value = page.evaluate(params["expression"])
@@ -821,7 +987,7 @@ class Browser:
         raise RuntimeError("内置面板客户端未在线，截图失败。请普通重启桌面端并在面板里打开过页面后重试。")
 
     def op_screenshot(self, params):
-        if params.get("target") == "builtin":
+        if self._target(params) == "builtin":
             return self._screenshot_builtin(params)
         page = self.current_page()
         shots_dir = Path(str(self.config.get("shotsDir", "~/.dsh/browser-bridge/shots"))).expanduser()
@@ -841,7 +1007,7 @@ class Browser:
         return {"path": str(path), "bytes": path.stat().st_size, "url": page.url, "title": _safe_title(page)}
 
     def op_dom(self, params):
-        if params.get("target") == "builtin":
+        if self._target(params) == "builtin":
             return self._builtin_dispatch("dom", params)
         page = self.current_page()
         selector = params.get("selector")
@@ -882,7 +1048,7 @@ class Browser:
         return info
 
     def op_click(self, params):
-        if params.get("target") == "builtin":
+        if self._target(params) == "builtin":
             return self._builtin_dispatch("click", params)
         page = self.current_page()
         selector = params["selector"]
@@ -907,6 +1073,7 @@ HANDLERS = {
     "emulate": Browser.op_emulate,
     "panel": Browser.op_panel,
     "back": Browser.op_back,
+    "client-info": Browser.op_client_info,
 }
 
 
@@ -946,14 +1113,22 @@ def _set_cmd_result(data):
         item["event"].set()
 
 
-def _start_control_server(port):
+def _start_control_server(port, browser=None):
     """127.0.0.1 控制端口：client.cjs 命令通道（/cmd/poll 取命令、/cmd/result 回报）。
 
+    另有两个**面向面板 UI** 的端点（2026-10-14 加，供机型下拉）：
+
+      GET  /devices     机型表（数据源 = 插件下发的 lib/devices.js，单一数据源）
+      POST /ui/emulate  UI 触发的仿真：能用 CDP 就用（完美），否则回 {applied:false} 让前端走 CSS 近似
+
     仅绑本机回环；端口信任级别 = 本机任意进程可调（与旧 CDP 9222 同级，但只暴露
-    命令队列读写，不暴露任意执行面）。
+    命令队列读写 + 机型表 + 仿真下发，不暴露任意执行面）。
     """
     import http.server
     import threading
+
+    global _UI_BROWSER
+    _UI_BROWSER = browser
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _respond(self, payload, status=200):
@@ -965,6 +1140,10 @@ def _start_control_server(port):
             self.end_headers()
             self.wfile.write(body)
 
+        def _read_json(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            return json.loads(self.rfile.read(length).decode("utf-8", "replace") or "{}")
+
         def do_GET(self):
             path = self.path.split("?")[0]
             if path == "/cmd/poll":
@@ -972,23 +1151,64 @@ def _start_control_server(port):
                 cmd = _poll_cmd(block_seconds=2)
                 self._respond({"cmd": cmd})
                 return
+            if path == "/devices":
+                # 面板机型下拉的数据源；表由插件在 config 下发（源自 lib/devices.js）
+                self._respond({
+                    "devices": _GLOBAL_CONFIG.get("devices") or [],
+                    "source": "lib/devices.js（与 Chrome DevTools 设备列表逐字段一致）",
+                })
+                return
             self._respond({"error": "unknown: %s" % path})
 
         def do_POST(self):
             path = self.path.split("?")[0]
+            if path == "/ui/emulate":
+                self._ui_emulate()
+                return
             if path != "/cmd/result":
                 self._respond({"error": "unknown: %s" % path})
                 return
             # client.cjs 回报命令执行结果：{"id":..., "ok":true, "result":...} 或 {"ok":false,"error":...}
             try:
-                length = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(length).decode("utf-8", "replace")
-                data = json.loads(raw or "{}")
+                data = self._read_json()
             except Exception as exc:
                 self._respond({"error": "bad body: %s" % exc})
                 return
             _set_cmd_result(data)
             self._respond({"received": True})
+
+        def _ui_emulate(self):
+            """面板 UI 触发的仿真。
+
+            CDP 可用（已 browser_attach）→ 由 daemon 直接下发 Emulation.*，**完美仿真**；
+            否则回 applied=false + 原因，前端据此走自己的 CSS 近似并显示"CSS"徽标。
+            """
+            try:
+                data = self._read_json()
+            except Exception as exc:
+                self._respond({"applied": False, "engine": "none", "reason": "bad body: %s" % exc})
+                return
+            browser = _UI_BROWSER
+            if browser is None:
+                self._respond({"applied": False, "engine": "none", "reason": "daemon 未就绪"})
+                return
+            try:
+                session = browser.builtin_session
+                if session is not None and session.alive():
+                    apply_emulation(
+                        lambda m, p=None: session.command(m, p, timeout=15),
+                        data.get("spec") or {},
+                        reset=bool(data.get("reset")),
+                    )
+                    self._respond({"applied": True, "engine": "cdp-attach"})
+                    return
+                self._respond({
+                    "applied": False,
+                    "engine": "none",
+                    "reason": "无 CDP 通道（未 browser_attach）；dpr / touch / (pointer: coarse) / Client Hints 需 CDP",
+                })
+            except Exception as exc:
+                self._respond({"applied": False, "engine": "none", "reason": "%s: %s" % (type(exc).__name__, exc)})
 
         def do_OPTIONS(self):
             self.send_response(204)
@@ -1035,7 +1255,9 @@ def handle(browser, msg):
 
 def main():
     browser = Browser()
-    _start_control_server(int(_GLOBAL_CONFIG.get("controlPort", 9330)))
+    # 端口优先级：环境变量（供测试隔离，避免抢生产 9330）> 插件 config 下发 > 默认 9330
+    port = int(os.environ.get("DSH_BRIDGE_CONTROL_PORT") or _GLOBAL_CONFIG.get("controlPort", 9330))
+    _start_control_server(port, browser)
     print(json.dumps({"type": "ready"}), flush=True)
     for line in sys.stdin:
         line = line.strip()

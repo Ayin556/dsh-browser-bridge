@@ -1,7 +1,9 @@
 # dsh-browser-bridge bundle layer.
 #
-# 一行：把 5 个浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click）
-# 注册进 DSH server 工具层，驱动一个用户可见的持久 Chrome（venv3 Python Playwright 守护进程）。
+# 一行：把浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/attach/emulate）
+# 注册进 DSH server 工具层。**默认目标 = builtin**（DSH 桌面端内置浏览器面板，无 CDP 命令通道，
+# 普通重启即可用）；仅在需要独立登录态/独立窗口时显式传 target=managed（托管的有头 Chrome）。
+# 默认值由插件配置 defaultTarget 控制，可在 profile 的 cordis.patch.yml 覆盖。
 
 - insert:
     - id: browser-bridge

@@ -1,7 +1,7 @@
 {
   "name": "dsh-browser-bridge",
-  "version": "0.2.1",
-  "description": "dsh server plugin: 给 agent 的浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/attach/emulate）——默认驱动用户可见的持久 Chrome；target=builtin 经无 CDP 命令通道驱动 DSH 桌面端内置浏览器面板（普通重启即可用、面板自动打开、设备仿真）。运行时零安装：走 venv3 的 Python Playwright 守护进程。",
+  "version": "0.5.0",
+  "description": "dsh server plugin: 给 agent 的浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/attach/emulate）——默认驱动 DSH 桌面端内置浏览器面板（target=builtin，无 CDP 命令通道，普通重启即可用、面板自动打开）；仅当需要独立登录态/独立窗口时才显式传 target=managed（用户可见的持久 Chrome）。设备仿真口径对齐 Chrome DevTools 设备工具栏（46 款机型 + 真实 UA/Client Hints），**面板地址栏内置机型下拉**（client.cjs 注入，CDP/CSS/原生 徽标如实标注），下发走 CDP Emulation.*（内置面板经 CDP attach；托管 Chrome 经 Playwright CDP）。运行时零安装：走 venv3 的 Python Playwright 守护进程。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -17,6 +17,8 @@
     "lib/index.js",
     "lib/client.cjs",
     "lib/browser_daemon.py",
+    "lib/devices.js",
+    "lib/electron-emulation.js",
     "cordis.patch.yml",
     "README.md",
     "test"

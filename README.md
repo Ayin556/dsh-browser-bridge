@@ -4,12 +4,25 @@
 browser_screenshot / browser_dom / browser_click` 五个操作工具 + `browser_attach`（CDP
 降级备用）+ `browser_emulate`（设备仿真）。两个操作目标：
 
-- **`managed`（默认）**：驱动一个**用户可见**的持久 Chrome（Playwright，有头、slowMo 放慢、
-  持久 profile 登录态跨会话保留）——用户全程旁观、可中断；
-- **`builtin`**：驱动 **DSH 桌面端内置浏览器面板**（右侧栏那个，用户可见）。
-  **2026-10-10 v5 定稿：无 CDP 命令通道——普通启动/重启桌面端即可用，无需任何启动参数、
-  无需 attach；面板未打开时 navigate 会自动打开。** 设备仿真（手机视口/UA）由随桌面端
+- **`builtin`（默认，2026-10-13 起）**：驱动 **DSH 桌面端内置浏览器面板**（右侧栏那个，
+  用户可见、不弹外部窗口）。**无 CDP 命令通道——普通启动/重启桌面端即可用，无需任何启动
+  参数、无需 attach；面板未打开时 navigate 会自动打开。** 设备仿真（手机视口/UA）由随桌面端
   常驻的客户端扩展（`lib/client.cjs`）默认管理。
+- **`managed`（仅在需要时显式指定）**：驱动一个**用户可见**的持久 Chrome（Playwright，有头、
+  slowMo 放慢、持久 profile 登录态跨会话保留）——用户全程旁观、可中断。适用场景：需要**独立
+  登录态**，或需要一个**独立窗口**（不占用/干扰 DSH 面板）。
+
+> **改了这个插件后怎么生效（两件事都要做，缺一不可）**：
+> ① 插件是 **server 侧代码**（cordis bundle 在进程启动时装载）→ **必须重启 DSH 桌面端**；
+> ② 工具 schema 与系统提示词公告段**按会话快照** → **必须开新会话**，旧会话里模型看到的仍是旧工具定义、
+> 连新增的参数都不存在。
+> 自检：新会话里让模型跑 `browser_emulate(list=true)` —— 能列出 46 款机型即为新代码生效；
+> 若报「没有 list 参数」或仍见 `device_scale_factor` 之类旧参数，就是没重启或用了旧会话。
+
+> **为什么默认是 builtin（2026-10-13 变更）**：此前默认是 `managed`，工具描述与系统提示词
+> 公告都写着"默认在有头 Chrome 中打开"，导致模型做页面调试时不传 `target` 就弹出外置 Chrome
+> 窗口——实测一场「老风控管理端」会话 72 次 `browser_*` 调用里 **57 次落到外置**，且是用户
+> 纠正后才切回内置。现在默认值、工具描述、公告段落三者一致指向内置面板。
 
 > 需求源与设计决策：`~/deepseekharness工作区/dsh-browser-control/开发交接卡.md`。
 > 权威踩坑实录与历次接力的全部细节：
@@ -20,15 +33,16 @@ browser_screenshot / browser_dom / browser_click` 五个操作工具 + `browser_
 
 | 工具 | 作用 | 备注 |
 |---|---|---|
-| `browser_navigate(url)` | 打开 URL | managed=托管 Chrome；builtin=内置面板（未打开时**自动打开**并首航） |
-| `browser_dom(selector?)` | 页面摘要（标题/可见文本/**输入框清单**）或元素 outerHTML | 登录页直接拿表单结构；密码框 value 永不回传 |
+| `browser_navigate(url)` | 打开 URL | **默认 builtin**（内置面板生效，未打开时**自动打开**并首航）；显式 target=managed 才用托管 Chrome |
+| `browser_dom(selector?)` | 页面摘要（标题/可见文本/**输入框清单**）或元素 outerHTML | 登录页直接拿表单结构；密码框 value 永不回传；builtin 只支持 CSS 选择器 |
 | `browser_evaluate(expression)` | 页面里执行 JS，返回 JSON | 表达式或 `() => {...}` 函数体；Promise 自动等待 |
-| `browser_click(selector)` | 点击（CSS 选择器） | 点击后返回新 URL/标题 |
+| `browser_click(selector)` | 点击（builtin 通道为 CSS 选择器） | 点击后返回新 URL/标题；Playwright 的 `text=`/`role=` 仅 managed 可用 |
 | `browser_screenshot(full_page?\|selector?)` | 截图落盘返回绝对路径 | 需要看图时模型再调 `read_image`；builtin 目标支持 selector 元素截图 |
 | `browser_attach(cdp_port?, url_prefix?)` | **【降级备用，一般不用】** CDP attach 到**带参重启**的 DSH 桌面端 | 仅在需要 CDP 深度调试时用；日常 builtin 无需它 |
-| `browser_emulate(…)` | 设备仿真开关/调参（宽度/UA/reset） | builtin 默认已是手机视口（390 锁宽 + 移动 UA）；managed 等价于调视口 |
+| `browser_emulate(device?\|orientation?\|width?\|height?\|dpr?\|reset?\|list?)` | **设备仿真**（口径对齐 Chrome DevTools 设备工具栏） | 46 款机型（`device="iPhone 16 Pro Max"`，模糊匹配）；`list=true` 列全部；内置面板走 Electron 原生 CDP，managed 同样走 CDP |
 
-所有工具带可选 `target`：`managed`（默认）｜`builtin`（内置面板，**普通重启即可用**）。
+所有工具带可选 `target`：**`builtin`（默认）**｜`managed`（仅在需要独立登录态/独立窗口时显式指定）。
+实际生效值 = 显式参数 ?? 插件配置 `defaultTarget`（JS 侧 `resolveTarget` 注入，守护进程侧 `_target` 兜底）。
 
 典型链路：`navigate → dom（找表单/元素）→ click/evaluate（操作）→ screenshot（回证）`。
 选择器选不中先用 `browser_dom` 看真实结构。
@@ -117,6 +131,7 @@ ln -sfn ~/deepseekharness工作区/dsh-browser-bridge ~/.dsh/profiles/<profile>/
   name: dsh-browser-bridge
   config:
     pythonBin: /Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3
+    defaultTarget: builtin    # 默认操作目标（模型不传 target 时生效）；改 managed 可恢复旧行为
     profileDir: ~/.dsh/browser-bridge/profile   # 登录态存这里（托管 Chrome）
     shotsDir: ~/.dsh/browser-bridge/shots       # 截图输出
     viewportWidth: 390        # 托管 Chrome 视口（内置面板的手机视口由 client 扩展管理）
@@ -132,6 +147,10 @@ ln -sfn ~/deepseekharness工作区/dsh-browser-bridge ~/.dsh/profiles/<profile>/
     announce: true            # 系统提示词公布工具用法（sectionOrder 116.7）
 ```
 
+设备仿真机型库（`lib/devices.js`）如需更新：从 npm `chrome-devtools-frontend` 的
+`front_end/models/emulation/EmulatedDevices.ts` 取 `DEVICE-LIST-BEGIN..END` 段重新生成即可
+（该段变化频率很低，跟 Chrome 大版本走）。
+
 ## 安全红线（不可违背）
 
 1. **不做自动提交生产系统表单**；内部系统登录先走 `fe-local-autologin` skill
@@ -141,12 +160,82 @@ ln -sfn ~/deepseekharness工作区/dsh-browser-bridge ~/.dsh/profiles/<profile>/
 4. 浏览器动作全部发生在**用户屏幕上**，保持可见、可中断；
 5. 本插件不开放远程端口；9330（命令队列）/9222（CDP 降级）都只绑 127.0.0.1，同为本机信任级。
 
+## 设备仿真（对齐 Chrome DevTools 设备工具栏，2026-10-13）
+
+**机型库**：`lib/devices.js` 的 46 款机型与 Chrome DevTools **逐字段一致**——
+数据直接取自 `chrome-devtools-frontend` 的 `front_end/models/emulation/EmulatedDevices.ts`
+（Chromium 里由 `embed_mobile_devices_in_cpp.py` 与 chromedriver 原生列表同步，即 DevTools
+设备下拉的同一来源），含真实 UA 与 Client Hints 元数据。查询：`browser_emulate(list=true)`。
+
+**下发通道（两处都用 CDP 的同一组命令）**：
+
+| 目标 | 通道 | 启动参数 | 状态 |
+|---|---|---|---|
+| `builtin`（内置面板） | **Electron 主进程原生 CDP**：`webContents.fromId(id).debugger.attach("1.3")` → `Emulation.*`（`lib/electron-emulation.js`） | **零**（普通重启即可） | ⚠️ 按进程拓扑**可能不可达**（见下），待实测 |
+| `builtin`（内置面板） | **CDP attach**：`browser_attach`（需一次 `--remote-debugging-port=9222` 重启）→ `BuiltinSession` 的 `Emulation.*` | 一次带参重启 | ✅ 通道早已验证；现已接完整规格 |
+| `managed`（托管 Chrome） | Playwright CDP session → `Emulation.*`（`browser_daemon.py` 的 `apply_emulation`） | 无 | ✅ **实测 12/12** |
+| `builtin` 降级 | client.cjs 的 CSS 近似（锁宽 + 覆盖 UA） | — | 结果里**明确标注缺项** |
+
+为什么必须 CDP：与 DevTools 一致的仿真需要 `Emulation.setDeviceMetricsOverride`
+（viewport/mobile/dpr/screen/朝向）、`setUserAgentOverride`（含 userAgentMetadata）
+与 `setTouchEmulationEnabled` 三个域；渲染进程的 `<webview>` 只暴露 `setUserAgent` /
+`setZoomFactor`，**没有 Emulation 域**，所以纯 DOM/CSS 那套永远做不出
+`(pointer: coarse)`、真实 touch 与 `navigator.userAgentData`。
+
+> ⚠️ **零参数通道的前提（2026-10-13 进程拓扑实测）**：Electron 的 `webContents` 模块
+> **只在同一 Electron 实例内可见**。DSH 桌面端**正常启动**时，UI 渲染进程（renderer）的父进程
+> 是 app 主进程 A，而 cordis host（本插件所在进程）是 A 拉起的**另一个 Electron 子进程 B**；
+> 面板的 `<webview>` 属于 A 的实例 → 在 B 里 `webContents.fromId(面板id)` 会拿不到。
+> 能否命中取决于启动方式，**用 `browser_emulate(diagnose=true)` 一条命令判定**：
+> 「可达」→ 走零参数通道；「不可达」→ 用 `browser_attach`（②）或 `target=managed`（③）。
+
+**诊断**：`browser_emulate(diagnose=true)` 输出宿主 Electron 版本、`require("electron")` 可用性、
+本实例 webContents 清单、面板上报的 id，以及「可达 / 不可达 / 面板未打开」的结论。
+排查「仿真没生效」先跑它。
+
+### 面板内的机型下拉（2026-10-14 加）
+
+面板地址栏右侧多了一组控件（由 `lib/client.cjs` 注入，随桌面端启动装载）：
+
+```
+⇄   [ 设备下拉 ]   [ CDP | CSS | 原生 ]
+```
+
+- **设备下拉**：`默认 · 手机 390` / `原生 · PC（不仿真）` / 46 款机型（按 手机·平板·笔记本·智能屏 分组）；
+  数据取自 `GET http://127.0.0.1:<controlPort>/devices`（daemon 端点，源头是插件下发的 `lib/devices.js`
+  —— 所以**没有第二份机型表**）。
+- **⇄ 旋转**：横屏 / 竖屏，对当前机型重下发一次。
+- **徽标**：`CDP` 绿 = 由 CDP 下发，与 Chrome DevTools 等价；`CSS` 橙 = 仅锁宽 + 覆盖 UA 的近似
+  （dpr / touch / `(pointer: coarse)` / Client Hints 未仿真）；`原生` 灰 = 未仿真。
+  悬停徽标有具体说明与"怎么才能变成 CDP"的提示。
+- 用户选择后：前端先做本地"外观"（锁宽 + 机型 UA，立即可见），随后 `POST /ui/emulate` 请 daemon
+  走 CDP；能上 CDP 徽标就是绿的。**daemon 只在已 `browser_attach` 时才有 CDP 通道**，否则回落近似。
+
+> 与 agent 的关系：下拉与 `browser_emulate` 工具**共用同一套 CDP 命令与同一份机型表**，
+> 面板手工切和让模型切效果一致，可以互相接着用。
+
+**实测（`test/emulation_probe.py`，iPhone 16 Pro Max 规格，12/12 通过）**：
+`innerWidth×innerHeight = 440×956`、`devicePixelRatio = 3`、`screen = 440×956`、
+UA 变 iPhone、`navigator.userAgentData.platform = iOS` / `.mobile = true`、
+`navigator.maxTouchPoints = 5`、`matchMedia('(pointer: coarse)')` 与 `(hover: none)` 均命中、
+跨导航保持、`reset` 还原。
+
+> 注意一个**不是 bug 的现象**：页面若没有 `<meta name="viewport" content="width=device-width">`，
+> mobile 模式下 Chromium 会使用约 980 CSS px 的默认 layout viewport 并缩放显示——
+> **Chrome DevTools 设备模式行为完全相同**；要按机型宽度布局，页面必须声明 viewport meta。
+
 ## 自测
 
 ```sh
 cd ~/deepseekharness工作区/dsh-browser-bridge
 node test/bridge.test.mjs                 # 单测（假 ctx，不弹浏览器；DSH_BRIDGE_TEST_NO_START=1 防止急启守护进程）
 DSH_BRIDGE_E2E=1 node test/bridge.test.mjs  # e2e（真 Chrome，slowMo=0，自动收尾零残留）
+
+# 设备仿真实测（managed 通道，无头 Chrome，约 20s；断言 viewport/dpr/UA/Client Hints/touch/媒体查询）
+venv3/bin/python3 -u test/emulation_probe.py
+
+# 面板 UI 端点契约（GET /devices、POST /ui/emulate、CORS 预检；不依赖桌面端，约 3s）
+venv3/bin/python3 -u test/ui_endpoints.py
 
 VENV=/Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3
 $VENV test/test_cmd_queue.py              # 命令队列逻辑单测
@@ -162,24 +251,27 @@ $VENV test/builtin_chain.py seq --takeover            # 全套 M2 链路（含�
 `builtin_chain.py --takeover` 会停掉插件当前的守护进程（9330 占用者）——测试完随手
 杀掉即可；插件会在下次工具调用时自愈重拉自己的守护进程。
 
-## M1 验收（托管 Chrome，重启 DSH 后第一件事）
+## M2 验收（内置面板 —— **默认路径**，v5 起普通重启即可）
 
-在 DSH 会话里对模型说：
-
-> 打开 http://localhost:80/riskmobile/ 登录并截图
-
-模型应依次调 `browser_navigate` → `browser_dom` → `browser_click`/`evaluate`
-→ `browser_screenshot`，用户全程看着 Chrome 窗口动作。
-
-## M2 验收（内置面板，v5 起普通重启即可）
-
-对模型说（无需任何启动参数）：
+对模型说（无需任何启动参数，也无需提 target）：
 
 > 用内置浏览器打开 https://www.baidu.com 并截图
 
-模型调 `browser_navigate(target=builtin)` → 面板自动打开并加载 → `screenshot` 落盘，
-用户看着右侧栏面板里页面动。2026-10-10 实测：`test/builtin_chain.py seq` 全绿
-（navigate/dom/evaluate/click/screenshot×2/emulate PC↔Mobile/reset/back）。
+模型调 `browser_navigate`（**不传 target** → 落到默认 builtin）→ 面板自动打开并加载 →
+`screenshot` 落盘，用户看着右侧栏面板里页面动。2026-10-10 实测：`test/builtin_chain.py seq`
+全绿（navigate/dom/evaluate/click/screenshot×2/emulate PC↔Mobile/reset/back）。
+
+> 2026-10-13 变更后新增验收口径：**新会话里模型不带 target 的 `browser_*` 调用必须落在内置面板**，
+> 不应再弹出任何外置 Chrome 窗口。
+
+## M1 验收（托管 Chrome —— 需显式 target=managed）
+
+在 DSH 会话里对模型说：
+
+> （需要独立窗口时）用 target=managed 打开 http://localhost:80/riskmobile/ 登录并截图
+
+模型应依次调 `browser_navigate(target=managed)` → `browser_dom` → `browser_click`/`evaluate`
+→ `browser_screenshot`，用户全程看着弹出的 Chrome 窗口动作。
 
 ## 与 BrowserSkill 的关系（重要背景）
 

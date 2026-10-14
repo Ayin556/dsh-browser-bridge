@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- 关键：设备仿真的视口断言必须有这一行。缺了它，Chromium 在 mobile 模式下会用
+     默认 layout viewport（约 980 CSS px）并把内容缩放显示——这正是 Chrome DevTools
+     的行为，所以"innerWidth=980"不是仿真失效，而是页面自己没声明 viewport。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>emulation fixture</title>
+</head>
+<body>
+<h1>设备仿真探针页</h1>
+<p id="out">初始文本</p>
+</body>
+</html>
