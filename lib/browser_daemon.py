@@ -591,11 +591,53 @@ class Browser:
             page = self.page = pages[-1]
         else:
             page = self.page = self.context.new_page()
+        self._hook_managed_logs(page)
         try:
             page.bring_to_front()
         except Exception:
             pass
         return page
+
+    # ---------- managed 通道的 console/network 采集（P2-b） ----------
+
+    def _hook_managed_logs(self, page):
+        """给托管页挂 console/request/response 监听（幂等：每页只挂一次），
+        结果缓存到 self._console_logs / _net_fails，供 op_console / op_network 读取。
+        """
+        if getattr(page, "_dsh_log_hooked", False):
+            return
+        page._dsh_log_hooked = True
+        if not hasattr(self, "_console_logs"):
+            self._console_logs = []
+            self._net_fails = []
+        try:
+            page.on("console", lambda msg: self._push_log(self._console_logs, {
+                "level": msg.type,
+                "message": (msg.text or "")[:2000],
+                "ts": int(time.time() * 1000),
+            }))
+            page.on("requestfailed", lambda req: self._push_log(self._net_fails, {
+                "url": (req.url or "")[:500], "status": None,
+                "type": "requestfailed",
+                "error": (req.failure or "unknown")[:300],
+                "ts": int(time.time() * 1000),
+            }))
+            page.on("response", lambda resp: self._push_log(self._net_fails, {
+                "url": (resp.url or "")[:500], "status": resp.status,
+                "type": "response",
+                "ts": int(time.time() * 1000),
+            }))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _push_log(buf, item):
+        try:
+            buf.append(item)
+            if len(buf) > 300:
+                del buf[: len(buf) - 300]
+        except Exception:
+            pass
 
     # ---------- 路线 C：CDP attach（双通道：Playwright page 化 / 裸 CDP） ----------
 
@@ -1060,6 +1102,82 @@ class Browser:
             pass
         return {"clicked": selector, "url": page.url, "title": _safe_title(page)}
 
+    def op_fill(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("fill", params)
+        page = self.current_page()
+        selector = params["selector"]
+        value = params.get("value", "")
+        page.locator(selector).first.fill(value)
+        return {"selector": selector, "value": value, "url": page.url, "title": _safe_title(page)}
+
+    def op_select(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("select", params)
+        page = self.current_page()
+        selector = params["selector"]
+        locator = page.locator(selector).first
+        label = params.get("label")
+        value = params.get("value")
+        if label is not None:
+            locator.select_option(label=label)
+            selected = {"label": label}
+        elif value is not None:
+            locator.select_option(value=str(value))
+            selected = {"value": value}
+        else:
+            raise ValueError("select 需要 value 或 label")
+        return {"selector": selector, "selected": selected, "url": page.url, "title": _safe_title(page)}
+
+    def op_press(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("press", params)
+        page = self.current_page()
+        selector = params.get("selector")
+        key = params["key"]
+        if selector:
+            page.locator(selector).first.press(key)
+        else:
+            page.keyboard.press(key)
+        return {"pressed": {"key": key}, "selector": selector or None, "url": page.url, "title": _safe_title(page)}
+
+    def op_hover(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("hover", params)
+        page = self.current_page()
+        selector = params["selector"]
+        page.locator(selector).first.hover()
+        return {"selector": selector, "hovered": True, "url": page.url, "title": _safe_title(page)}
+
+    def op_console(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("console", params)
+        page = self.current_page()
+        limit = int(params.get("limit", 100))
+        # Playwright 的 console 事件需监听缓存；当前页未预置监听时现场捞不到历史 →
+        # 退而求其次：报告"监听未启用"提示，并附带可用的 performance 资源信息。
+        logs = list(getattr(self, "_console_logs", []) or [])[-limit:]
+        return {"logs": logs, "url": page.url, "title": _safe_title(page),
+                "hint": "managed 通道的 console 监听在下次页面交互时记录（本命令后查看）"}
+
+    def op_network(self, params):
+        if self._target(params) == "builtin":
+            return self._builtin_dispatch("network", params)
+        page = self.current_page()
+        limit = int(params.get("limit", 80))
+        entries = page.evaluate(
+            """() => (performance && performance.getEntriesByType
+                ? performance.getEntriesByType('resource').map(e => ({
+                    name: e.name.slice(0, 500),
+                    initiatorType: e.initiatorType || '',
+                    duration: Math.round(e.duration),
+                    transferSize: e.transferSize || 0,
+                    status: null
+                  })) : [])"""
+        )
+        fails = list(getattr(self, "_net_fails", []) or [])[-100:]
+        return {"entries": entries[-limit:], "fails": fails, "url": page.url, "title": _safe_title(page)}
+
 
 HANDLERS = {
     "navigate": Browser.op_navigate,
@@ -1067,6 +1185,12 @@ HANDLERS = {
     "screenshot": Browser.op_screenshot,
     "dom": Browser.op_dom,
     "click": Browser.op_click,
+    "fill": Browser.op_fill,
+    "select": Browser.op_select,
+    "press": Browser.op_press,
+    "hover": Browser.op_hover,
+    "console": Browser.op_console,
+    "network": Browser.op_network,
     "attach": Browser.op_attach,
     "targets": Browser.op_targets,
     "detach": Browser.op_detach,

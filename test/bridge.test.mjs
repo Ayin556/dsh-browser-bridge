@@ -68,27 +68,39 @@ function makeHarness() {
 	assert.deepEqual([...h.tools.keys()].sort(), [
 		"browser_attach",
 		"browser_click",
+		"browser_console",
 		"browser_dom",
 		"browser_emulate",
 		"browser_evaluate",
+		"browser_fill",
+		"browser_hover",
 		"browser_navigate",
-		"browser_screenshot"
+		"browser_network",
+		"browser_press",
+		"browser_screenshot",
+		"browser_select"
 	]);
 	assert.equal(h.sections.length, 1, "应注册一个公告段落");
 	const announceText = h.sections[0].text({ scope: void 0 });
 	assert.ok(announceText.includes("browser_navigate"), "公告应包含 browser_navigate");
 	assert.ok(announceText.includes("browser_attach"), "公告应包含 browser_attach");
 	assert.ok(announceText.includes("browser_emulate"), "公告应包含 browser_emulate");
+	assert.ok(announceText.includes("browser_fill"), "公告应包含 browser_fill");
+	assert.ok(announceText.includes("browser_select"), "公告应包含 browser_select");
+	assert.ok(announceText.includes("browser_press"), "公告应包含 browser_press");
+	assert.ok(announceText.includes("browser_hover"), "公告应包含 browser_hover");
+	assert.ok(announceText.includes("browser_console"), "公告应包含 browser_console");
+	assert.ok(announceText.includes("browser_network"), "公告应包含 browser_network");
 	assert.ok(announceText.includes("内置浏览器面板"), "公告应说明默认走 DSH 内置浏览器面板");
 	assert.ok(announceText.includes("target=managed"), "公告应说明 managed 是显式可选项");
 	assert.ok(announceText.includes("不要用 bash 打开外部浏览器"), "公告应含「禁止外部浏览器」硬规则");
 	assert.ok(announceText.includes("fe-local-autologin"), "公告应包含登录红线提示");
 	assert.equal(h.effects.length, 1, "应注册一个清理 effect");
-	console.log("✓ apply() 注册 7 工具 + announce 段落 + 清理 effect");
+	console.log("✓ apply() 注册 13 工具 + announce 段落 + 清理 effect");
 
 	// 2b. 每个带 target 的工具：schema 描述必须与真实默认一致（模型靠它决定开不开外置窗口）
 	const targetDesc = (tool) => tool.parameters.properties.target.description;
-	for (const name of ["browser_navigate", "browser_evaluate", "browser_screenshot", "browser_dom", "browser_click", "browser_emulate"]) {
+	for (const name of ["browser_navigate", "browser_evaluate", "browser_screenshot", "browser_dom", "browser_click", "browser_fill", "browser_select", "browser_press", "browser_hover", "browser_console", "browser_network", "browser_emulate"]) {
 		const desc = targetDesc(h.tools.get(name));
 		assert.ok(desc.includes("省略即 builtin"), `${name}.target 描述应声明默认 builtin，实际：${desc.slice(0, 60)}`);
 	}
@@ -193,6 +205,22 @@ function makeHarness() {
 	assert.ok(clientSrc.includes("CHOICE_KEY") && clientSrc.includes("function saveChoice"), "设备选择必须持久化（localStorage 粘性）");
 	assert.ok(clientSrc.includes("var initChoice = LAST_CHOICE.value"), "新 webview 首挂必须套用上次的设备选择");
 	assert.ok(clientSrc.includes("applyDeviceChoice(wv, initChoice, LAST_CHOICE.orientation, false)"), "首挂套用机型时应传 fromUser=false（不重载，避免与地址栏首航竞态）");
+	// P2 能力缺口护栏（2026-10-23 加）：
+	//  a) fill/select/press/hover 四操作在 client.cjs 有实现、daemon 有 handler、index 有工具
+	assert.ok(clientSrc.includes('if (op === "fill")') && clientSrc.includes('if (op === "select")') && clientSrc.includes('if (op === "press")') && clientSrc.includes('if (op === "hover")'), "client.cjs 应有 fill/select/press/hover 四个 op 实现");
+	assert.ok(daemonSrc.includes('"fill": Browser.op_fill') && daemonSrc.includes('"select": Browser.op_select') && daemonSrc.includes('"press": Browser.op_press') && daemonSrc.includes('"hover": Browser.op_hover'), "daemon HANDLERS 应注册 fill/select/press/hover");
+	assert.ok(pluginSrc.includes('name: "browser_fill"') && pluginSrc.includes('name: "browser_select"') && pluginSrc.includes('name: "browser_press"') && pluginSrc.includes('name: "browser_hover"'), "index.js 应注册 browser_fill/select/press/hover 四个工具");
+	//  b) console/network 读取：client 有 op、daemon 有 handler、index 有工具
+	assert.ok(clientSrc.includes('if (op === "console")') && clientSrc.includes('if (op === "network")'), "client.cjs 应有 console/network 两个 op 实现");
+	assert.ok(clientSrc.includes('addEventListener("console-message"') && clientSrc.includes("wv.__dshConsole"), "client.cjs 应监听 console-message 缓存日志");
+	assert.ok(daemonSrc.includes('"console": Browser.op_console') && daemonSrc.includes('"network": Browser.op_network'), "daemon HANDLERS 应注册 console/network");
+	assert.ok(daemonSrc.includes("def op_console") && daemonSrc.includes("def op_network"), "daemon 应有 op_console/op_network 实现");
+	assert.ok(pluginSrc.includes('name: "browser_console"') && pluginSrc.includes('name: "browser_network"'), "index.js 应注册 browser_console/browser_network 工具");
+	//  c) P2-c 设备外壳观感：client.cjs 有圆角/黑边/阴影/画布样式；fixture 存在
+	assert.ok(clientSrc.includes('wv.style.borderRadius = "20px"') && clientSrc.includes('wv.style.border = "7px solid #1b1b1f"'), "client.cjs 应有设备外壳圆角+黑边样式（P2-c）");
+	assert.ok(clientSrc.includes('#2a2a2e'), "client.cjs 应有画布背景色（P2-c）");
+	const { existsSync } = await import("node:fs");
+	assert.ok(existsSync(join(ROOT, "test/shell-fixture.html")), "应有 shell-fixture.html（P2-c 视觉验证 fixture）");
 	console.log("✓ UI 接线契约：机型下拉横跨 client.cjs / browser_daemon.py / index.js 三处关键件齐全（含原生·PC 回归护栏）");
 }
 //#endregion

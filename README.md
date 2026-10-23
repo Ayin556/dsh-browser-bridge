@@ -1,8 +1,9 @@
 # dsh-browser-bridge
 
 给 agent 的浏览器控制插件（DSH server 侧）：注册 `browser_navigate / browser_evaluate /
-browser_screenshot / browser_dom / browser_click` 五个操作工具 + `browser_attach`（CDP
-降级备用）+ `browser_emulate`（设备仿真）。两个操作目标：
+browser_screenshot / browser_dom / browser_click / browser_fill / browser_select /
+browser_press / browser_hover / browser_console / browser_network` 十一个操作工具 +
+`browser_attach`（CDP 降级备用）+ `browser_emulate`（设备仿真）。两个操作目标：
 
 - **`builtin`（默认，2026-10-13 起）**：驱动 **DSH 桌面端内置浏览器面板**（右侧栏那个，
   用户可见、不弹外部窗口）。**无 CDP 命令通道——普通启动/重启桌面端即可用，无需任何启动
@@ -37,6 +38,12 @@ browser_screenshot / browser_dom / browser_click` 五个操作工具 + `browser_
 | `browser_dom(selector?)` | 页面摘要（标题/可见文本/**输入框清单**）或元素 outerHTML | 登录页直接拿表单结构；密码框 value 永不回传；builtin 只支持 CSS 选择器 |
 | `browser_evaluate(expression)` | 页面里执行 JS，返回 JSON | 表达式或 `() => {...}` 函数体；Promise 自动等待 |
 | `browser_click(selector)` | 点击（builtin 通道为 CSS 选择器） | 点击后返回新 URL/标题；Playwright 的 `text=`/`role=` 仅 managed 可用 |
+| `browser_fill(selector, value)` | 向输入框填文本 | 兼容 React/Vue 受控组件（native setter + input/change）；支持 input/textarea/contenteditable |
+| `browser_select(selector, value\|label)` | 下拉选择一项 | 按 value / label / 索引匹配；触发 change+input |
+| `browser_press(key, selector?)` | 按键 | Enter/Tab/Escape/方向键/Home/End 等命名键；单字符输入到目标（默认焦点元素） |
+| `browser_hover(selector)` | 悬停 | mouseover/mouseenter/mousemove，唤起悬浮菜单/提示 |
+| `browser_console(limit?\|level?)` | 读页面 console 日志 | 内置面板走 webview console-message 实时缓存；托管 Chrome 走 Playwright 监听 |
+| `browser_network(limit?)` | 读网络请求 | performance 资源条目 + 失败/异常请求（fetch/XHR ≥400、requestfailed） |
 | `browser_screenshot(full_page?\|selector?)` | 截图落盘返回绝对路径 | 需要看图时模型再调 `read_image`；builtin 目标支持 selector 元素截图 |
 | `browser_attach(cdp_port?, url_prefix?)` | **【降级备用，一般不用】** CDP attach 到**带参重启**的 DSH 桌面端 | 仅在需要 CDP 深度调试时用；日常 builtin 无需它 |
 | `browser_emulate(device?\|orientation?\|width?\|height?\|dpr?\|reset?\|list?)` | **设备仿真**（口径对齐 Chrome DevTools 设备工具栏） | 46 款机型（`device="iPhone 16 Pro Max"`，模糊匹配）；`list=true` 列全部；内置面板走 Electron 原生 CDP，managed 同样走 CDP |
@@ -112,17 +119,26 @@ DSH server (cordis)                      venv3 Python
 - **自愈**：用户手动关掉浏览器 → 下一次工具调用自动重拉（登录态在 profile 里，不丢）；
 - **收尸**：DSH 退出/插件卸载 → 守护进程 stdin EOF → 关浏览器退出，零残留。
 
-## 安装（2026-10-09 已落地的三处登记，两 profile 各一套）
+## 安装（一键，推荐）
 
 ```sh
-# 1. profile 的依赖软链（web + desktop 都已做）
-ln -sfn ~/deepseekharness工作区/dsh-browser-bridge ~/.dsh/profiles/<profile>/node_modules/dsh-browser-bridge
-# 2. profile 的 package.json：dependencies 加 link: + dsh.profile.bundles 加包名（已做）
-# 3. 插件自身的 node_modules/@deepseek-ai 软链到共享层（已做）
+./install.sh                # 默认装到 desktop profile（DSH 桌面端内置浏览器面板的宿主）
+./install.sh --check        # 只检查现状（0=已装好 1=需装）
+./install.sh --python <venv python3 路径>   # 指定 venv（一般自动探测即可）
 ```
 
-生效：重启桌面端（普通启动即可，v5 起**无需任何参数**）。bundle 解析可用
-`dsh --profile web --dump-config` 验证（`- id: browser-bridge` 正确插入）。
+脚本自动完成三处登记（软链 + package.json 的 dependencies/bundles + 插件自身 peer 软链），
+并把探测到的 venv python 写进 profile 的 `cordis.patch.yml` 配置块（探测路径 ≠ 插件默认值时才写；
+一致则无需覆盖，bundle 层自动生效）。幂等：重复执行安全。
+
+生效：**重启 DSH 桌面端**（普通启动即可，v5 起**无需任何参数**）+ **开新会话**。
+bundle 解析可用 `dsh --profile <p> --dump-config` 验证（`- id: browser-bridge` 正确插入）。
+自检：新会话里 `browser_emulate(list=true)` 能列出 46 款机型即生效。
+
+> 手动安装（不跑脚本时）：① `ln -sfn <插件目录> ~/.dsh/profiles/<profile>/node_modules/dsh-browser-bridge`
+> ② 该 profile 的 `package.json`：dependencies 加 `"dsh-browser-bridge": "link:<插件目录>"`、
+> `dsh.profile.bundles` 加 `"dsh-browser-bridge"` ③ 插件自身 `node_modules/@deepseek-ai/{cosmokit,dsh-tools,schemastery}`
+> 软链到 `~/.dsh/profiles/node_modules/@deepseek-ai/` 共享层。
 
 ## 配置（写进 `~/.dsh/profiles/<profile>/cordis.patch.yml` 覆盖）
 
