@@ -10,6 +10,7 @@
   navigator.userAgent / userAgentData       ← setUserAgentOverride(+Metadata)
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -17,7 +18,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-VENV = "/Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3"
+# 用安装脚本建好的通用 venv；可用 DSH_BRIDGE_PYTHON 覆盖
+VENV = os.environ.get("DSH_BRIDGE_PYTHON") or str(
+    Path.home() / ".dsh" / "browser-bridge" / "venv" / "bin" / "python3"
+)
 DAEMON = str(ROOT / "lib" / "browser_daemon.py")
 FIXTURE = (HERE / "fixture.html").as_uri()
 # 带 <meta name="viewport" content="width=device-width"> 的探针页：设备仿真的视口断言必须用它，

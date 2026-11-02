@@ -1,7 +1,7 @@
 {
   "name": "dsh-browser-bridge",
-  "version": "0.6.0",
-  "description": "dsh server plugin: 给 agent 的浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/fill/select/press/hover/console/network + attach/emulate）——默认驱动 DSH 桌面端内置浏览器面板（target=builtin，无 CDP 命令通道，普通重启即可用、面板自动打开）；仅当需要独立登录态/独立窗口时才显式传 target=managed（用户可见的持久 Chrome）。设备仿真口径对齐 Chrome DevTools 设备工具栏（46 款机型 + 真实 UA/Client Hints），面板地址栏内置机型下拉，仿真时设备外壳观感（圆角/黑边/画布居中）。console/network 读取：内置面板走 webview 事件 + performance，托管 Chrome 走 Playwright 监听。附带一键安装脚本 install.sh（自动探测 venv python、软链三步、写 profile 配置）。运行时零安装：走 venv3 的 Python Playwright 守护进程。",
+  "version": "0.7.0",
+  "description": "dsh server plugin: 给 agent 的浏览器控制工具（browser_navigate/evaluate/screenshot/dom/click/fill/select/press/hover/console/network + attach/emulate）——默认驱动 DSH 桌面端内置浏览器面板（target=builtin，无 CDP 命令通道，普通重启即可用、面板自动打开）；仅当需要独立登录态/独立窗口时才显式传 target=managed（用户可见的持久 Chrome）。设备仿真口径对齐 Chrome DevTools 设备工具栏（46 款机型 + 真实 UA/Client Hints），面板地址栏内置机型下拉，仿真时设备外壳观感（圆角/黑边/画布居中）。console/network 读取：内置面板走 webview 事件 + performance，托管 Chrome 走 Playwright 监听。附带一键安装脚本（macOS/Linux 用 install.sh，Windows 用 install.ps1；自动建 venv + 装 playwright + 三处登记）。运行时零 npm 依赖：走 venv 里的 Python Playwright 守护进程。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -21,6 +21,7 @@
     "lib/electron-emulation.js",
     "cordis.patch.yml",
     "install.sh",
+    "install.ps1",
     "README.md",
     "test"
   ],

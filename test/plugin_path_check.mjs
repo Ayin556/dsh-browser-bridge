@@ -14,8 +14,14 @@
  *   3. 结束时给守护进程发 EOF 收尸，零残留。
  */
 import { setTimeout as sleep } from "node:timers/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const plugin = await import("file:///Users/ayin/deepseekharness工作区/dsh-browser-bridge/lib/index.js");
+// 相对本文件解析插件入口，避免把作者本机的绝对路径写死在仓库里
+const pluginUrl = pathToFileURL(
+	resolve(dirname(fileURLToPath(import.meta.url)), "../lib/index.js")
+).href;
+const plugin = await import(pluginUrl);
 
 const tools = new Map();
 const logs = [];

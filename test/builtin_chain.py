@@ -6,8 +6,8 @@
 下发到 DSH 桌面端里的 client.cjs（须已随桌面端运行并在轮询），回收结果。
 本脚本主要用来在开发/排障时无 DSH 会话地驱动面板（不依赖 agent 工具层）。
 
-用法（务必用含 playwright 的解释器，推荐 venv3）:
-  VENV=/Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3
+用法（务必用含 playwright 的解释器，默认取安装脚本建好的通用 venv）:
+  VENV=~/.dsh/browser-bridge/venv/bin/python3   # 可用 DSH_BRIDGE_PYTHON 覆盖
   $VENV test/builtin_chain.py ping
   $VENV test/builtin_chain.py panel action=state
   $VENV test/builtin_chain.py navigate url=http://127.0.0.1:8799/builtin_probe.html
@@ -37,7 +37,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DAEMON = os.path.join(ROOT, "lib", "browser_daemon.py")
-VENV = "/Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3"
+VENV = os.environ.get("DSH_BRIDGE_PYTHON") or os.path.expanduser(
+    "~/.dsh/browser-bridge/venv/bin/python3"
+)
 SHOTS = os.path.expanduser("~/.dsh/browser-bridge/shots")
 CTRL_PORT = 9330
 

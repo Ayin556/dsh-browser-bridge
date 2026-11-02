@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# dsh-browser-bridge 一键安装脚本
+# dsh-browser-bridge 一键安装脚本（macOS / Linux；Windows 用 install.ps1）
 #
 # 用法：
 #   ./install.sh [--profile desktop|web] [--python <venv python3 路径>] [--check]
 #
-# 默认安装到 desktop profile（DSH 桌面端内置浏览器面板的宿主，内置浏览器能力所在）。
-# 会自动完成原本要手工做的三处登记：
+# 默认装到 desktop profile（DSH 桌面端内置浏览器面板的宿主）。
+# 自动完成三处登记：
 #   1. profile 的 node_modules/dsh-browser-bridge → 软链到本插件目录
 #   2. profile 的 package.json：dependencies 加 link: + dsh.profile.bundles 加包名
 #   3. 插件自身 node_modules/@deepseek-ai/{cosmokit,dsh-tools,schemastery} → 软链到共享层
-# 并把探测到的 venv python 写进 profile 的 cordis.patch.yml（browser-bridge 配置块的 pythonBin）。
+# 没有可用 venv 时自动用系统 python3 建 ~/.dsh/browser-bridge/venv 并装 playwright。
+#
+# 前置：DSH 桌面端装好并至少启动过一次（生成 profiles/desktop）；
+#       Python 3.9+；managed 通道另需系统 Chrome（builtin 不需要）。
 #
 # 可选参数：
 #   --profile <name>   装到指定 profile（desktop / web）；默认 desktop
-#   --python <path>    指定 venv python3 路径；不传则自动探测（见 detect_python 候选表）
-#   --check            只检查现状，不做任何写操作（返回：0=已装好 1=未装/需装）
+#   --python <path>    指定 venv python3；不传则自动探测 → 自建
+#   --check            只检查现状，不写任何东西（0=已装好 1=未装/需装）
 #
-# 环境变量：DSH_BRIDGE_PYTHON 可替代 --python（CI / 批量装机场景）。
-#
-# 装完需要：重启 DSH 桌面端 + 开新会话（插件是 server 侧代码，进程启动时装载；
-# 工具 schema 按会话快照）。自检：新会话里跑 browser_emulate(list=true)。
+# 环境变量：DSH_BRIDGE_PYTHON 替代 --python；PIP_INDEX_URL 走内网镜像。
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -29,13 +29,17 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DSH_PROFILES="${DSH_PROFILES:-$HOME/.dsh/profiles}"
 # 共享层（dsh 本体安装位置）与 profile 无关：peer 软链固定指向这里，不跟随 DSH_PROFILES。
 SHARED_NODE_MODULES="${HOME}/.dsh/profiles/node_modules"
+# 通用 venv 位置：与 lib/index.js 的 pythonBin 默认值保持一致。
+# 所有机器都落到同一路径，装完无需逐台写 profile 覆盖。
+BRIDGE_HOME="${HOME}/.dsh/browser-bridge"
+DEFAULT_VENV_PY="${BRIDGE_HOME}/venv/bin/python3"
 
 PROFILE="desktop"
 PYTHON_BIN="${DSH_BRIDGE_PYTHON:-}"
 CHECK_ONLY=0
 
 usage() {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -54,8 +58,9 @@ warn() { printf '\033[33m[install]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[install]\033[0m %s\n' "$*"; exit 1; }
 
 # ── 1. 探测 venv python（要能 import playwright）───────────────────────────
-# 显式指定（--python / DSH_BRIDGE_PYTHON）时严格校验：不可用就报错，不静默 fallback；
-# 未指定时遍历候选表取第一个可用者。
+# 优先级：显式指定 > 通用 venv > 历史已有 venv。
+# 全都没有时由 ensure_python() 用系统 python3 自动建一个（见 1b）。
+# 显式指定（--python / DSH_BRIDGE_PYTHON）时严格校验：不可用就报错，不静默 fallback。
 detect_python() {
   local c
   if [[ -n "${PYTHON_BIN:-}" ]]; then
@@ -71,8 +76,9 @@ detect_python() {
     return 0
   fi
   local candidates=(
-    "${HOME}/person/person-python/windowsPC/pythonPC/venv3/bin/python3"
+    "$DEFAULT_VENV_PY"
     "${HOME}/.aiconfig/venv/bin/python3"
+    "${HOME}/person/person-python/windowsPC/pythonPC/venv3/bin/python3"
   )
   for c in "${candidates[@]}"; do
     [[ -x "$c" ]] || continue
@@ -81,6 +87,64 @@ detect_python() {
     fi
   done
   return 1
+}
+
+# ── 1b. 没有可用 venv 时自建（通用路径，幂等）──────────────────────────────
+# 找系统 python3（要求 >= 3.9；playwright 需要 3.9+）
+find_system_python() {
+  local p
+  for p in "$(command -v python3 2>/dev/null || true)" /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    [[ -n "$p" && -x "$p" ]] || continue
+    if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+      echo "$p"; return 0
+    fi
+  done
+  return 1
+}
+
+ensure_python() {
+  local sys_py
+  if ! sys_py="$(find_system_python)"; then
+    warn "未找到 Python 3.9+（系统 python3 不存在或版本过低）"
+    warn "macOS：brew install python@3.12　或　https://www.python.org/downloads/"
+    return 1
+  fi
+  info "未发现可用 venv，用系统 Python 自建：${sys_py}"
+  mkdir -p "$BRIDGE_HOME"
+  if [[ ! -x "$DEFAULT_VENV_PY" ]]; then
+    "$sys_py" -m venv "${BRIDGE_HOME}/venv" || { warn "创建 venv 失败：${BRIDGE_HOME}/venv"; return 1; }
+    ok "venv 已创建：${BRIDGE_HOME}/venv"
+  else
+    info "复用已有 venv：${BRIDGE_HOME}/venv"
+  fi
+  info "安装 playwright（首次约 1-2 分钟）…"
+  # 内网/国内网络慢：先 export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+  if ! "$DEFAULT_VENV_PY" -m pip install --disable-pip-version-check -q playwright; then
+    warn "playwright 安装失败。如在公司内网，设置镜像后重跑："
+    warn "  export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
+    return 1
+  fi
+  ok "playwright 已安装：$("$DEFAULT_VENV_PY" -c 'import playwright; print(playwright.__version__ if hasattr(playwright,"__version__") else "ok")' 2>/dev/null || echo ok)"
+  return 0
+}
+
+# ── 1c. 系统 Chrome 检测（只影响 managed 通道，builtin 不需要）──────────────
+check_chrome() {
+  local found=0
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    [[ -d "/Applications/Google Chrome.app" ]] && found=1
+    [[ -d "${HOME}/Applications/Google Chrome.app" ]] && found=1
+  else
+    command -v google-chrome >/dev/null 2>&1 && found=1
+    command -v google-chrome-stable >/dev/null 2>&1 && found=1
+    command -v chromium >/dev/null 2>&1 && found=1
+  fi
+  if [[ $found -eq 1 ]]; then
+    ok "系统 Chrome：已检测到（managed 通道可用）"
+  else
+    warn "未检测到 Chrome —— builtin（内置面板）不受影响，但 target=managed 会启动失败"
+    warn "需要 managed 时装 Google Chrome 即可，不必跑 playwright install"
+  fi
 }
 
 # ── 2. 检查插件自身 peerDeps 软链（cosmokit / dsh-tools / schemastery）──────
@@ -198,11 +262,9 @@ install_profile() {
   # 注意：插件 bundle 自带的 cordis.patch.yml 已插入 `- id: browser-bridge`（用插件默认
   # pythonBin）。只有当「探测路径 ≠ 插件默认 pythonBin」时才需要 profile 层配置块覆盖；
   # 一致时 profile 层无需写（判为已配置）。
-  local default_python
-  default_python="$(grep -o 'pythonBin: z.string().default("[^"]*")' "${PLUGIN_DIR}/lib/index.js" | sed 's/.*default("//; s/")//' | head -1)"
-  if [[ -z "$default_python" ]]; then
-    default_python="${HOME}/person/person-python/windowsPC/pythonPC/venv3/bin/python3"
-  fi
+  # 插件默认值与安装脚本约定一致（lib/index.js 的 pythonBin 默认 = ~/.dsh/browser-bridge/venv）。
+  # 不再从源码 grep 解析：默认值已改成跨平台表达式，文本匹配会失效。
+  local default_python="$DEFAULT_VENV_PY"
 
   local has_block=0
   if [[ -f "$patch_yml" ]] && grep -q '^\- id: browser-bridge' "$patch_yml"; then
@@ -249,27 +311,44 @@ echo ""
 info "dsh-browser-bridge 安装（插件目录：${PLUGIN_DIR}）"
 info "DSH profiles 根：${DSH_PROFILES}"
 
-# 探测 python
+# 探测 python（探测不到就自动建通用 venv，不再要人手动指定）
 if ! PYTHON_BIN="$(detect_python)"; then
   case "${PYTHON_BIN:-}" in
     ERR:NOEXEC)
       warn "指定的 venv python 不可执行：${DSH_BRIDGE_PYTHON:-（--python 传入的路径）}"
+      fail "请检查路径是否正确"
       ;;
     ERR:NOPLAYWRIGHT)
-      warn "指定的 venv python 存在但缺少 playwright：${DSH_BRIDGE_PYTHON:-（--python 传入的路径）}"
-      warn "请先安装：<venv>/bin/pip install playwright"
+      warn "指定的 venv python 缺少 playwright：${DSH_BRIDGE_PYTHON:-（--python 传入的路径）}"
+      fail "请先执行：<venv>/bin/pip install playwright（或去掉 --python 让脚本自建）"
       ;;
     *)
-      warn "未能自动探测到可用的 venv python（需能 import playwright）。"
-      warn "候选：${HOME}/person/person-python/windowsPC/pythonPC/venv3/bin/python3、${HOME}/.aiconfig/venv/bin/python3"
+      if [[ $CHECK_ONLY -eq 1 ]]; then
+        warn "未发现可用的 playwright venv（--check 模式不自动创建）"
+        echo ""
+        echo "检查结果：未装好（缺 venv；直接跑 ./install.sh 会自动创建）"
+        exit 1
+      fi
+      info "未发现可用的 playwright venv，开始自动准备…"
+      if ! ensure_python; then
+        fail "自动准备 venv 失败。可手动指定：./install.sh --python <venv python3 路径>"
+      fi
+      PYTHON_BIN="$DEFAULT_VENV_PY"
+      if ! "$PYTHON_BIN" -c "import playwright" >/dev/null 2>&1; then
+        fail "venv 已存在但 playwright 仍不可用：${PYTHON_BIN}"
+      fi
       ;;
   esac
-  fail "请用 --python <路径> 指定一个装有 playwright 的 venv"
 fi
 ok "venv python：${PYTHON_BIN}"
 
+# Chrome 检测（软提示，不阻断安装：builtin 通道不需要 Chrome）
+check_chrome
+
 # peer 软链
+INCOMPLETE=0
 if ! ensure_plugin_peer_links; then
+  INCOMPLETE=1
   if [[ $CHECK_ONLY -eq 1 ]]; then
     echo ""
     echo "检查结果：未完全装好（见上方 warn）"
@@ -279,6 +358,7 @@ fi
 
 # profile 登记
 if ! install_profile "$PROFILE"; then
+  INCOMPLETE=1
   if [[ $CHECK_ONLY -eq 1 ]]; then
     echo ""
     echo "检查结果：未完全装好（见上方 warn）"
@@ -288,12 +368,28 @@ fi
 
 if [[ $CHECK_ONLY -eq 1 ]]; then
   echo ""
+  if [[ $INCOMPLETE -eq 1 ]]; then
+    echo "检查结果：未完全装好（见上方 warn）"
+    exit 1
+  fi
   echo "检查结果：已装好 ✅（${PROFILE} profile）"
   exit 0
 fi
 
 echo ""
-ok "安装完成 ✅"
+if [[ $INCOMPLETE -eq 0 ]]; then
+  ok "安装完成 ✅"
+else
+  # 关键：登记写了一半但依赖缺失时，绝不能报成功——插件进程会装载失败，
+  # 用户只会看到"工具没出现"，完全不知道差什么。
+  warn "登记已完成，但上面有跳过项 → 插件当前**不会生效**"
+  echo ""
+  echo "最常见原因：DSH 桌面端还没装、或没启动过（缺少 ${SHARED_NODE_MODULES} 共享层）。"
+  echo "处理：先启动一次 DSH 桌面端，再重跑本脚本（幂等，可直接重跑）。"
+  echo ""
+  echo "卸载：删除上面登记的软链 + package.json 两行 + cordis.patch.yml 配置块即可。"
+  exit 2
+fi
 echo ""
 echo "下一步："
 echo "  1. 重启 DSH 桌面端（普通重启即可，无需任何带参）"

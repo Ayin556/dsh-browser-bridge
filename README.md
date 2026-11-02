@@ -25,10 +25,8 @@ browser_press / browser_hover / browser_console / browser_network` 十一个操�
 > 窗口——实测一场「老风控管理端」会话 72 次 `browser_*` 调用里 **57 次落到外置**，且是用户
 > 纠正后才切回内置。现在默认值、工具描述、公告段落三者一致指向内置面板。
 
-> 需求源与设计决策：`~/deepseekharness工作区/dsh-browser-control/开发交接卡.md`。
-> 权威踩坑实录与历次接力的全部细节：
-> `~/.aiconfig/project-overlays/deepseekharness/kb/dsh-browser-bridge/内置浏览器调试能力.md`。
 > 开发/排障活体驱动工具：`test/builtin_chain.py`（下文「自测」节）。
+> 设计决策与历次踩坑实录属于作者本地开发笔记，未随仓库发布——排障请直接看「自测」节的脚本。
 
 ## 工具一览
 
@@ -119,26 +117,75 @@ DSH server (cordis)                      venv3 Python
 - **自愈**：用户手动关掉浏览器 → 下一次工具调用自动重拉（登录态在 profile 里，不丢）；
 - **收尸**：DSH 退出/插件卸载 → 守护进程 stdin EOF → 关浏览器退出，零残留。
 
-## 安装（一键，推荐）
+## 安装
+
+### 前置要求
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| DSH 桌面端 | 0.2.x | **必须是桌面端**：`builtin` 目标驱动的就是桌面端右侧栏的浏览器面板，纯 CLI / web profile 没有这个面板（只能走 `managed`） |
+| 首次启动 | 至少启动过一次 | 脚本要往 `~/.dsh/profiles/desktop` 写登记，该目录由桌面端首次启动时创建 |
+| Python | 3.9+ | 装脚本自己会用系统 Python 建 venv 并装 playwright，**不需要你手动配** |
+| Chrome | 可选 | 只有 `target=managed`（独立窗口 / 独立登录态）需要；`builtin` 不需要 |
+
+### macOS / Linux
 
 ```sh
-./install.sh                # 默认装到 desktop profile（DSH 桌面端内置浏览器面板的宿主）
-./install.sh --check        # 只检查现状（0=已装好 1=需装）
-./install.sh --python <venv python3 路径>   # 指定 venv（一般自动探测即可）
+git clone https://github.com/Ayin556/dsh-browser-bridge.git
+cd dsh-browser-bridge
+./install.sh
 ```
 
-脚本自动完成三处登记（软链 + package.json 的 dependencies/bundles + 插件自身 peer 软链），
-并把探测到的 venv python 写进 profile 的 `cordis.patch.yml` 配置块（探测路径 ≠ 插件默认值时才写；
-一致则无需覆盖，bundle 层自动生效）。幂等：重复执行安全。
+### Windows（PowerShell）
+
+```powershell
+git clone https://github.com/Ayin556/dsh-browser-bridge.git
+cd dsh-browser-bridge
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+> Windows 用**目录 Junction** 而不是符号链接：Junction 不需要管理员权限，也不用开「开发者模式」。
+> `install.ps1` 内容是纯 ASCII（PowerShell 5.1 会用系统 ANSI 代码页读无 BOM 脚本，写中文会乱码），
+> 你若要加中文注释，请另存为 **UTF-8 with BOM**。
+
+### 脚本做了什么
+
+1. **准备 Python 环境**：探测已有 venv；没有就用系统 Python 建 `~/.dsh/browser-bridge/venv`
+   （Windows 是 `%USERPROFILE%\.dsh\browser-bridge\venv`）并 `pip install playwright`。
+   这个路径就是插件 `pythonBin` 的默认值，所以装完**不需要写任何配置覆盖**。
+2. **三处登记**：profile 的 `node_modules/dsh-browser-bridge` → 插件目录（软链/Junction）；
+   profile 的 `package.json` 加 `dependencies` + `dsh.profile.bundles`；插件自身
+   `node_modules/@deepseek-ai/{cosmokit,dsh-tools,schemastery}` → dsh 共享层。
+3. **检测 Chrome**（软提示，不阻断安装）。
+
+只有「探测到的 venv ≠ 插件默认路径」时，才会往 profile 的 `cordis.patch.yml` 追加配置块覆盖。
+脚本幂等，重复执行安全。
+
+> 公司内网 / 国内网络装 playwright 慢，先设镜像再跑：
+> `export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`
+> （Windows：`$env:PIP_INDEX_URL = 'https://pypi.tuna.tsinghua.edu.cn/simple'`）
+
+### 校验与生效
+
+```sh
+./install.sh --check          # 退出码 0=已装好 1=未装齐
+./install.sh --python <venv python3 路径>   # 复用已有 venv（一般不用传）
+# Windows: powershell -ExecutionPolicy Bypass -File .\install.ps1 -Check
+```
 
 生效：**重启 DSH 桌面端**（普通启动即可，v5 起**无需任何参数**）+ **开新会话**。
 bundle 解析可用 `dsh --profile <p> --dump-config` 验证（`- id: browser-bridge` 正确插入）。
 自检：新会话里 `browser_emulate(list=true)` 能列出 46 款机型即生效。
 
+> **脚本最后报「不会生效」（退出码 2）怎么办**：说明 `~/.dsh/profiles/node_modules` 共享层不存在，
+> 绝大多数情况是 DSH 桌面端没装或没启动过。启动一次桌面端再重跑脚本即可。
+> 脚本特意不把这种情况报成成功——否则你只会看到「工具没出现」，完全不知道差什么。
+
 > 手动安装（不跑脚本时）：① `ln -sfn <插件目录> ~/.dsh/profiles/<profile>/node_modules/dsh-browser-bridge`
-> ② 该 profile 的 `package.json`：dependencies 加 `"dsh-browser-bridge": "link:<插件目录>"`、
-> `dsh.profile.bundles` 加 `"dsh-browser-bridge"` ③ 插件自身 `node_modules/@deepseek-ai/{cosmokit,dsh-tools,schemastery}`
-> 软链到 `~/.dsh/profiles/node_modules/@deepseek-ai/` 共享层。
+> （Windows 用 `New-Item -ItemType Junction`）② 该 profile 的 `package.json`：dependencies 加
+> `"dsh-browser-bridge": "link:<插件目录>"`、`dsh.profile.bundles` 加 `"dsh-browser-bridge"`
+> ③ 插件自身 `node_modules/@deepseek-ai/{cosmokit,dsh-tools,schemastery}` 软链到
+> `~/.dsh/profiles/node_modules/@deepseek-ai/` 共享层。
 
 ## 配置（写进 `~/.dsh/profiles/<profile>/cordis.patch.yml` 覆盖）
 
@@ -146,7 +193,7 @@ bundle 解析可用 `dsh --profile <p> --dump-config` 验证（`- id: browser-br
 - id: browser-bridge
   name: dsh-browser-bridge
   config:
-    pythonBin: /Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3
+    pythonBin: ~/.dsh/browser-bridge/venv/bin/python3   # 默认值；一般无需写这一项
     defaultTarget: builtin    # 默认操作目标（模型不传 target 时生效）；改 managed 可恢复旧行为
     profileDir: ~/.dsh/browser-bridge/profile   # 登录态存这里（托管 Chrome）
     shotsDir: ~/.dsh/browser-bridge/shots       # 截图输出
@@ -255,25 +302,26 @@ UA 变 iPhone、`navigator.userAgentData.platform = iOS` / `.mobile = true`、
 ## 自测
 
 ```sh
-cd ~/deepseekharness工作区/dsh-browser-bridge
+cd dsh-browser-bridge
 node test/bridge.test.mjs                 # 单测（假 ctx，不弹浏览器；DSH_BRIDGE_TEST_NO_START=1 防止急启守护进程）
 DSH_BRIDGE_E2E=1 node test/bridge.test.mjs  # e2e（真 Chrome，slowMo=0，自动收尾零残留）
 
+# 下面这些用安装脚本建好的 venv；也可以换成任意装了 playwright 的解释器
+VENV=~/.dsh/browser-bridge/venv/bin/python3
+
 # 设备仿真实测（managed 通道，无头 Chrome，约 20s；断言 viewport/dpr/UA/Client Hints/touch/媒体查询）
-venv3/bin/python3 -u test/emulation_probe.py
+$VENV -u test/emulation_probe.py
 
 # 面板 UI 端点契约（GET /devices、POST /ui/emulate、CORS 预检；不依赖桌面端，约 3s）
-venv3/bin/python3 -u test/ui_endpoints.py
+$VENV -u test/ui_endpoints.py
 
-VENV=/Users/ayin/person/person-python/windowsPC/pythonPC/venv3/bin/python3
 $VENV test/test_cmd_queue.py              # 命令队列逻辑单测
 # 内置面板活体链路（需桌面端已开且新版 client 已装载；会接管 9330）：
 $VENV test/builtin_chain.py ping                      # client 探活
 $VENV test/builtin_chain.py panel action=state        # 宿主态快照（无 CDP 排障口）
 $VENV test/builtin_chain.py seq --takeover            # 全套 M2 链路（含自动开面板+首航+仿真），输出 PASS/FAIL 汇总
 # 探针页服务（seq 默认 url 使用；双 fork 防沙箱回收）：
-/Users/ayin/.workbuddy/binaries/python/versions/3.13.12/bin/python3 -m http.server 8799 \
-  --bind 127.0.0.1 --directory test
+python3 -m http.server 8799 --bind 127.0.0.1 --directory test
 ```
 
 `builtin_chain.py --takeover` 会停掉插件当前的守护进程（9330 占用者）——测试完随手
@@ -319,7 +367,7 @@ nohup /Applications/DeepSeek\ Harness.app/Contents/MacOS/DeepSeek\ Harness \
   --remote-debugging-port=9222 --expose-internals \
   /Applications/DeepSeek\ Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js \
   /Applications/DeepSeek\ Harness.app/Contents/Resources/app.asar/dsh \
-  /Users/ayin/.dsh/profiles/desktop \
+  $HOME/.dsh/profiles/desktop \
   /Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/primary-runtime \
   /Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/pnpm/bin/pnpm.mjs \
   /Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/bin \

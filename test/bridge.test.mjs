@@ -53,14 +53,19 @@ function makeHarness() {
 	const config = typeof plugin.Config === "function" ? plugin.Config({}) : plugin.Config;
 	assert.equal(plugin.name, "dsh-browser-bridge");
 	assert.deepEqual(plugin.inject, ["tools", "systemPrompt"]);
-	assert.equal(config.pythonBin.endsWith("/bin/python3"), true, "pythonBin 默认应是 venv3 python3");
+	// 默认解释器必须落在通用 venv（mac/Linux: bin/python3，Windows: Scripts\python.exe）
+	const isDefaultVenvPy =
+		process.platform === "win32"
+			? /[\\/]Scripts[\\/]python\.exe$/.test(config.pythonBin)
+			: config.pythonBin.endsWith("/bin/python3");
+	assert.equal(isDefaultVenvPy, true, "pythonBin 默认应是 ~/.dsh/browser-bridge/venv 的解释器");
 	assert.equal(config.viewportWidth, 390);
 	assert.equal(config.viewportHeight, 844);
 	assert.equal(config.headless, false);
 	assert.equal(config.slowMoMs, 250);
 	// 2026-10-13：默认目标改为内置浏览器面板（此前 managed 会让模型不传 target 时弹外置 Chrome）
 	assert.equal(config.defaultTarget, "builtin", "defaultTarget 默认应是 builtin");
-	console.log("✓ Config 默认值（viewport 390x844 / 有头 / slowMo 250ms / venv3 python / 默认目标 builtin）");
+	console.log("✓ Config 默认值（viewport 390x844 / 有头 / slowMo 250ms / 通用 venv python / 默认目标 builtin）");
 
 	// 2. apply 注册
 	const h = makeHarness();
